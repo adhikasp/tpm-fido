@@ -13,6 +13,16 @@ import (
 	"github.com/foxcpp/go-assuan/pinentry"
 )
 
+// Prompt is what the user sees when the token asks for confirmation. Empty
+// fields fall back to the old generic labels.
+type Prompt struct {
+	Title  string // window title (default "TPM-FIDO")
+	Desc   string // the site asking, shown at the top
+	Prompt string // the question above the buttons
+	OK     string // label for the accept button
+	Cancel string // label for the decline button
+}
+
 func New() *Pinentry {
 	return &Pinentry{}
 }
@@ -36,7 +46,7 @@ type Result struct {
 	Error error
 }
 
-func (pe *Pinentry) ConfirmPresence(prompt string, challengeParam, applicationParam [32]byte) (chan Result, error) {
+func (pe *Pinentry) ConfirmPresence(pd Prompt, challengeParam, applicationParam [32]byte) (chan Result, error) {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 
@@ -67,12 +77,12 @@ func (pe *Pinentry) ConfirmPresence(prompt string, challengeParam, applicationPa
 		extendTimeout:    make(chan time.Duration),
 	}
 
-	go pe.prompt(pe.activeRequest, prompt)
+	go pe.prompt(pe.activeRequest, pd)
 
 	return pe.activeRequest.pendingResult, nil
 }
 
-func (pe *Pinentry) prompt(req *request, prompt string) {
+func (pe *Pinentry) prompt(req *request, pd Prompt) {
 	sendResult := func(r Result) {
 		select {
 		case req.pendingResult <- r:
@@ -103,9 +113,25 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 	}()
 
 	defer p.Shutdown()
-	p.SetTitle("TPM-FIDO")
-	p.SetPrompt("TPM-FIDO")
-	p.SetDesc(prompt)
+	title := pd.Title
+	if title == "" {
+		title = "TPM-FIDO"
+	}
+	p.SetTitle(title)
+	if pd.Desc != "" {
+		p.SetDesc(pd.Desc)
+	}
+	if pd.Prompt != "" {
+		p.SetPrompt(pd.Prompt)
+	} else {
+		p.SetPrompt(title)
+	}
+	if pd.OK != "" {
+		p.SetOkBtn(pd.OK)
+	}
+	if pd.Cancel != "" {
+		p.SetCancelBtn(pd.Cancel)
+	}
 
 	promptResult := make(chan bool)
 

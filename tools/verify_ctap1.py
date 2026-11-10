@@ -149,7 +149,9 @@ def main():
     ver = send_apdu(dev, bytes.fromhex("000300000000000000"))
     print(f"U2F version: {ver.decode()}")
 
-    app_param = hashlib.sha256(b"https://tpm-fido.test").digest()
+    origin = sys.argv[1] if len(sys.argv) > 1 else "https://tpm-fido.test"
+    app_param = hashlib.sha256(origin.encode()).digest()
+    print(f"origin: {origin}")
     challenge = os.urandom(32)
     print(
         "registering (a pinentry dialog titled 'TPM-FIDO' should appear -> click Confirm)"

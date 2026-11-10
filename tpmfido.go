@@ -11,6 +11,9 @@ import (
 	"flag"
 	"log"
 	"math/big"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/psanford/tpm-fido/attestation"
@@ -25,11 +28,59 @@ import (
 
 var backend = flag.String("backend", "tpm", "tpm|memory")
 var device = flag.String("device", "/dev/tpmrm0", "TPM device path")
+var origins = flag.String("origins", defaultOriginsPath(), "known site origins, one per line (# comments)")
+
+func defaultOriginsPath() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "known-origins.txt"
+		}
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "tpm-fido", "known-origins.txt")
+}
 
 func main() {
 	flag.Parse()
+
+	if n, err := sitesignatures.LoadFile(*origins); err != nil {
+		log.Printf("reading origins file %s: %s", *origins, err)
+	} else if n > 0 {
+		log.Printf("loaded %d extra site name(s) from %s", n, *origins)
+	}
+
 	s := newServer()
 	s.run()
+}
+
+// presencePrompt names the site the request is for, so the dialog is not blank.
+// A site is only named when its application parameter matches a known origin;
+// otherwise the user is told the site is unrecognised.
+func presencePrompt(action string, appParam [32]byte) pinentry.Prompt {
+	site, known := sitesignatures.Lookup(appParam)
+
+	p := pinentry.Prompt{
+		Title:  "Security key",
+		OK:     "Allow",
+		Cancel: "Cancel",
+	}
+	if known {
+		p.Desc = site
+	} else {
+		p.Desc = "Unrecognised site (" + strings.TrimPrefix(site, "unknown site ") + ")"
+	}
+
+	switch action {
+	case "register":
+		p.Prompt = "Create a new security key for this site?"
+	case "authenticate":
+		p.Prompt = "Sign in to this site with the key?"
+	default:
+		p.Prompt = "Use the security key?"
+	}
+	return p
 }
 
 type server struct {
@@ -158,7 +209,7 @@ func (s *server) handleAuthenticate(parentCtx context.Context, token *fidohid.So
 
 	if req.Authenticate.Ctrl == fidoauth.CtrlEnforeUserPresenceAndSign {
 
-		pinResultCh, err := s.pe.ConfirmPresence("FIDO Confirm Auth", req.Authenticate.ChallengeParam, req.Authenticate.ApplicationParam)
+		pinResultCh, err := s.pe.ConfirmPresence(presencePrompt("authenticate", req.Authenticate.ApplicationParam), req.Authenticate.ChallengeParam, req.Authenticate.ApplicationParam)
 
 		if err != nil {
 			log.Printf("pinentry err: %s", err)
@@ -230,7 +281,7 @@ func (s *server) handleRegister(parentCtx context.Context, token *fidohid.SoftTo
 	defer cancel()
 	req := evt.Req
 
-	pinResultCh, err := s.pe.ConfirmPresence("FIDO Confirm Register", req.Register.ChallengeParam, req.Register.ApplicationParam)
+	pinResultCh, err := s.pe.ConfirmPresence(presencePrompt("register", req.Register.ApplicationParam), req.Register.ChallengeParam, req.Register.ApplicationParam)
 
 	if err != nil {
 		log.Printf("pinentry err: %s", err)
