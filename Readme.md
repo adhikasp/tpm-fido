@@ -16,6 +16,32 @@ On an authentication request, tpm-fido will attempt to load the primary key by i
 
 tpm-fido has been tested to work with Chrome and Firefox on Linux.
 
+## Confirmation dialog
+
+`tpm-fido` asks a `pinentry` program to confirm user presence. It tries these in
+order and uses the first one that actually starts:
+
+`pinentry-gnome3`, `pinentry-qt6`, `pinentry-qt5`, `pinentry-qt4`, `pinentry-qt`,
+`pinentry-gtk-2`, `pinentry-gtk`, `pinentry-x11`, `pinentry-fltk`,
+`pinentry-bemenu`.
+
+A prompter that is installed but cannot run (missing shared library, no session,
+sandbox) is skipped and logged instead of leaving the browser waiting for a
+dialog that will never appear.
+
+To force one:
+
+```sh
+tpm-fido -pinentry /usr/bin/pinentry-qt
+# or
+TPM_FIDO_PINENTRY=/usr/bin/pinentry-bemenu tpm-fido
+```
+
+The dialog names the site the request is for, resolved from
+`~/.config/tpm-fido/known-origins.txt` (one host or URL per line, `#` comments).
+Origins that are not listed are shown as unrecognised rather than guessed, since
+the token only ever sees `SHA-256` of the origin.
+
 ## Building
 
 ```

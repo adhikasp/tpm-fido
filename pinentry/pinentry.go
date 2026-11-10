@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,32 +168,94 @@ func (pe *Pinentry) prompt(req *request, pd Prompt) {
 	}
 }
 
-func FindPinentryGUIPath() string {
-	candidates := []string{
-		"pinentry-gnome3",
-		"pinentry-qt5",
-		"pinentry-qt4",
-		"pinentry-qt",
-		"pinentry-gtk-2",
-		"pinentry-x11",
-		"pinentry-fltk",
-	}
-	for _, candidate := range candidates {
-		p, _ := exec.LookPath(candidate)
-		if p != "" {
-			return p
+// PrompterOverride names a specific pinentry binary to use, set from -pinentry
+// or TPM_FIDO_PINENTRY. Empty means autodetect.
+var PrompterOverride string
+
+// Prompters are tried in order. pinentry-gnome3 comes first because its dialog
+// is the most likely to exist on a desktop, but every entry is treated as a
+// candidate rather than a promise: a prompter that fails to start is skipped
+// instead of leaving the user staring at a browser with no dialog (upstream
+// issues #45, #29, #41).
+var guiPrompters = []string{
+	"pinentry-gnome3",
+	"pinentry-qt6",
+	"pinentry-qt5",
+	"pinentry-qt4",
+	"pinentry-qt",
+	"pinentry-gtk-2",
+	"pinentry-gtk",
+	"pinentry-x11",
+	"pinentry-fltk",
+	"pinentry-bemenu",
+}
+
+// HasGUIPrompter reports whether any known prompter binary is installed. Used
+// once at startup so a missing prompter is a warning in the log, not a minute
+// of a browser waiting for a dialog that can never appear.
+func HasGUIPrompter() bool {
+	for _, name := range guiPrompters {
+		if _, err := exec.LookPath(name); err == nil {
+			return true
 		}
 	}
-	return ""
+	return false
+}
+
+// prompterCandidates returns the binaries to try, with an explicit override
+// first. The rest of the list still follows, so a typo or a package removal
+// degrades to a working dialog instead of no dialog at all.
+func prompterCandidates() []string {
+	override := PrompterOverride
+	if override == "" {
+		override = os.Getenv("TPM_FIDO_PINENTRY")
+	}
+	if override == "" {
+		return guiPrompters
+	}
+	return append([]string{override}, guiPrompters...)
 }
 
 func launchPinEntry(ctx context.Context) (*pinentry.Client, *exec.Cmd, error) {
-	pinEntryCmd := FindPinentryGUIPath()
-	if pinEntryCmd == "" {
-		log.Printf("Failed to detect gui pinentry binary. Falling back to default `pinentry`")
-		pinEntryCmd = "pinentry"
+	var tried []string
+
+	for _, name := range prompterCandidates() {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			tried = append(tried, name+" (not installed)")
+			continue
+		}
+
+		c, cmd, err := startPinEntry(ctx, path)
+		if err != nil {
+			// The common failure is a binary that exists but cannot run (a
+			// removed shared library, no display, a sandbox). Say so: silence
+			// here is what makes "the key does nothing" impossible to debug.
+			log.Printf("pinentry: %s unusable: %s", path, err)
+			tried = append(tried, path+" ("+err.Error()+")")
+			continue
+		}
+
+		log.Printf("pinentry: using %s", path)
+		return c, cmd, nil
 	}
-	cmd := exec.CommandContext(ctx, pinEntryCmd)
+
+	// Last resort: the distro's pinentry dispatcher, which knows about
+	// /etc/pinentry/preexec. It may be curses, but it is better than nothing.
+	if path, err := exec.LookPath("pinentry"); err == nil {
+		if c, cmd, err := startPinEntry(ctx, path); err == nil {
+			log.Printf("pinentry: using %s (fallback)", path)
+			return c, cmd, nil
+		} else {
+			tried = append(tried, path+" ("+err.Error()+")")
+		}
+	}
+
+	return nil, nil, fmt.Errorf("no usable pinentry program (tried %s)", strings.Join(tried, "; "))
+}
+
+func startPinEntry(ctx context.Context, path string) (*pinentry.Client, *exec.Cmd, error) {
+	cmd := exec.CommandContext(ctx, path)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -211,9 +275,14 @@ func launchPinEntry(ctx context.Context) (*pinentry.Client, *exec.Cmd, error) {
 		ReadCloser:  stdout,
 		WriteCloser: stdin,
 	})
-
 	if err != nil {
+		// Reap the child: a prompter that failed its INIT handshake has
+		// already exited or is about to, and leaving a zombie per attempt
+		// would leak one for every request.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return nil, nil, err
 	}
+
 	return &c, cmd, nil
 }

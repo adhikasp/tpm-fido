@@ -29,6 +29,7 @@ import (
 var backend = flag.String("backend", "tpm", "tpm|memory")
 var device = flag.String("device", "/dev/tpmrm0", "TPM device path")
 var origins = flag.String("origins", defaultOriginsPath(), "known site origins, one per line (# comments)")
+var pinentryPath = flag.String("pinentry", "", "pinentry program to use (default: autodetect, first one that runs wins)")
 
 func defaultOriginsPath() string {
 	dir := os.Getenv("XDG_CONFIG_HOME")
@@ -44,6 +45,10 @@ func defaultOriginsPath() string {
 
 func main() {
 	flag.Parse()
+
+	if *pinentryPath != "" {
+		pinentry.PrompterOverride = *pinentryPath
+	}
 
 	if n, err := sitesignatures.LoadFile(*origins); err != nil {
 		log.Printf("reading origins file %s: %s", *origins, err)
@@ -117,8 +122,8 @@ func newServer() *server {
 func (s *server) run() {
 	ctx := context.Background()
 
-	if pinentry.FindPinentryGUIPath() == "" {
-		log.Printf("warning: no gui pinentry binary detected in PATH. tpm-fido may not work correctly without a gui based pinentry")
+	if !pinentry.HasGUIPrompter() {
+		log.Printf("warning: no gui pinentry binary found in PATH; requests will have nothing to confirm with")
 	}
 
 	token, err := fidohid.New(ctx, "tpm-fido")
