@@ -50,7 +50,7 @@ func (pe *Pinentry) ConfirmPresence(pd Prompt, challengeParam, applicationParam 
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
 
-	timeout := 2 * time.Second
+	timeout := 10 * time.Second
 
 	if pe.activeRequest != nil {
 		if challengeParam != pe.activeRequest.challengeParam || applicationParam != pe.activeRequest.applicationParam {
@@ -63,6 +63,7 @@ func (pe *Pinentry) ConfirmPresence(pd Prompt, challengeParam, applicationParam 
 			select {
 			case extendTimeoutChan <- timeout:
 			case <-time.After(timeout):
+				log.Printf("pinentry: could not extend confirmation timeout")
 			}
 		}()
 
@@ -156,6 +157,7 @@ func (pe *Pinentry) prompt(req *request, pd Prompt) {
 			})
 			return
 		case d := <-req.extendTimeout:
+			log.Printf("pinentry: extending confirmation timeout by %s", d)
 			if !timer.Stop() {
 				<-timer.C
 			}
